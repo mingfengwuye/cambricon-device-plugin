@@ -5,16 +5,16 @@ metadata:
   name: configmap
 data:
   onload-version: 201606-u1.3
-  reg-exp-sfc: (?m)[\r\n]+^.*SFC[6-9].*$
-  socket-name: sfcNIC
-  resource-name: solarflare/smartNIC
+  reg-exp-cam: (?m)[\r\n]+^.*Synopsys.*$
+  socket-name: camCard
+  resource-name: cambricon/card
   k8s-api: http://127.0.0.1:8080
-  node-label-onload-version: device.sfc.onload-version
+  node-label-onload-version: device.cambricon
 ---
 apiVersion: extensions/v1beta1
 kind: DaemonSet
 metadata:
-  name: sfc-device-plugin
+  name: cambricon-device-plugin
   namespace: kube-system
   labels:
     tier: node
@@ -33,7 +33,7 @@ spec:
         effect: NoSchedule
       containers:
       - name: device-plugin-ctr
-        image: sfc-dev-plugin:latest
+        image: cambricon-dev-plugin:latest
         imagePullPolicy: Never
         command: ["./start.sh"]
         env:
@@ -42,11 +42,11 @@ spec:
             configMapKeyRef:
               name: configmap
               key: onload-version
-        - name: REG_EXP_SFC
+        - name: REG_EXP_CAM
           valueFrom:
             configMapKeyRef:
               name: configmap
-              key: reg-exp-sfc
+              key: reg-exp-cam
         - name: SOCKET_NAME
           valueFrom:
             configMapKeyRef:

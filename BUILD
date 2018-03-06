@@ -9,7 +9,7 @@ load(
 )
 
 go_binary(
-    name = "sfc_nic",
+    name = "cambricon",
     library = ":go_default_library",
     tags = ["automanaged"],
 )
@@ -17,7 +17,7 @@ go_binary(
 go_library(
     name = "go_default_library",
     srcs = [
-        "sfc_nic_plugin.go",
+        "cambricon-device-plugin.go",
     ],
     tags = ["automanaged"],
     deps = [

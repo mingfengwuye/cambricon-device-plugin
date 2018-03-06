@@ -27,10 +27,11 @@ import (
 var onloadver string    = "201606-u1.3"
 var onloadsrc string    = "http://www.openonload.org/download/openonload-" + onloadver + ".tgz"
 var regExpCAM string    = "(?m)[\r\n]+^.*Synopsys.*$"
+var regExpDev string    = "cambricon_dmDev"
 var socketName string   = "camCard"
 var resourceName string = "cambricon/card"
 var k8sAPI string       = "https://localhost:6443"
-var nodeLabelVersion string = "device.sfc.onload-version"
+var nodeLabelVersion string = "device.cambricon"
 
 //)
 // camCardManager manages Cambricon Card devices
@@ -42,7 +43,8 @@ type camCardManager struct {
 func NewCAMCardManager() (*camCardManager, error) {
 	return &camCardManager{
 		devices:     make(map[string]*pluginapi.Device),
-		deviceFiles: []string{"/dev/cambricon_dmDev0"},
+		//deviceFiles: []string{"/dev/cambricon_dmDev0"},
+		deviceFiles: []string{},
 	}, nil
 }
 
@@ -59,6 +61,26 @@ func ExecCommand(cmdName string, arg ...string) (bytes.Buffer, error) {
 	}
 
 	return out, err
+}
+
+func ListDir(dirPth string, suffix string) (files []string, err error) {
+	files = make([]string, 0, 10)
+	dir, err := ioutil.ReadDir(dirPth)
+	if err != nil {
+		return nil, err
+	}
+	PthSep := string(os.PathSeparator)
+	//suffix = strings.ToUpper(suffix) //忽略后缀匹配的大小写
+	for _, fi := range dir {
+		if fi.IsDir() { // 忽略目录
+			continue
+		}
+		if strings.Contains(fi.Name(), suffix) { //匹配文件
+			files = append(files, dirPth+PthSep+fi.Name())
+		}
+	}
+
+	return files, nil
 }
 
 func (cam *camCardManager) discoverCambriconResources() bool {
@@ -174,7 +196,7 @@ func (cam *camCardManager) ListAndWatch(emtpy *pluginapi.Empty, stream pluginapi
 func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	glog.Info("Allocate")
 	resp := new(pluginapi.AllocateResponse)
-	//	containerName := strings.Join([]string{"k8s", "POD", rqt.PodName, rqt.Namespace}, "_")
+	//containerName := strings.Join([]string{"k8s", "POD", rqt.PodName, rqt.Namespace}, "_")
 	for _, id := range rqt.DevicesIDs {
 		if _, ok := cam.devices[id]; ok {
 			for _, d := range cam.deviceFiles {
@@ -286,6 +308,34 @@ func main() {
 		glog.Errorf("No Cambricon Cards are present\n")
 		os.Exit(1)
 	}
+
+	// install kernel module
+        out, err := ExecCommand("./load.sh")
+        if err != nil {
+               glog.Error(err)
+        }
+	glog.Info(out.String())
+
+	// find device in /dev/, such as /dev/cambricon_dmDev0
+	//devs, err := ExecCommand("ls", "/dev/")
+        //if err != nil {
+        //       glog.Error(err)
+        //}
+	//glog.Info(camCards.String())
+	//re := regexp.MustCompile(regExpDev)
+        //camCards := re.FindAllString(devs.String(), -1)
+
+	camCards, err := ListDir("/dev", "cambricon")	
+        for _, card := range camCards {
+                //nameIf := strings.Fields(cards)[1]
+                fmt.Printf("dev name: %v \n", card)
+                //dev := pluginapi.Device{ID: strings.Fields(cards)[2], Health: pluginapi.Healthy}
+                strings.Join(cam.deviceFiles, card)
+                //found = true
+        }
+        //fmt.Printf("Devices: %v \n", cam.devices)
+
+
 	if !cam.isOnloadInstallHealthy() {
 		//err = cam.Init()
 		//if err != nil {
@@ -299,6 +349,7 @@ func main() {
 	//AnnotateNodeWithOnloadVersion(onloadver)
 
 	pluginEndpoint := fmt.Sprintf("%s-%d.sock", socketName, time.Now().Unix())
+	//pluginEndpoint := fmt.Sprintf("%s.sock", socketName)
 	//serverStarted := make(chan bool)
 	var wg sync.WaitGroup
 	wg.Add(1)
