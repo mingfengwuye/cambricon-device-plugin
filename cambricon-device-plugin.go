@@ -25,17 +25,26 @@ import (
 var socketName string   = "camCard"
 var resourceName string = "cambricon/card"
 var volumePath string   = "/home/a/fyk/container-volume"
+
+var serverSock string = pluginapi.DevicePluginPath + "cambricon.sock" 
+
+var tempPath string = ""
 //)
 // camCardManager manages Cambricon Card devices
 type camCardManager struct {
 	devices     map[string]*pluginapi.Device
 	deviceFiles map[string]string
+
+	socket string
+	server *grpc.Server
 }
 
 func NewCAMCardManager() (*camCardManager, error) {
 	return &camCardManager{
 		devices:     make(map[string]*pluginapi.Device),
 		deviceFiles: make(map[string]string),
+
+		socket: serverSock,
 	}, nil
 }
 
@@ -194,19 +203,130 @@ func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.Allocate
 	return resp, nil
 }
 
-func (cam *camCardManager) Init() error {
-        glog.Info("Init\n")
-        glog.Info("Install kernel module\n")
+//func (cam *camCardManager) Init() error {
+//        glog.Info("Init\n")
+//        glog.Info("Install kernel module\n")
+//
+//        // install kernel module
+//        out, err := ExecCommand("./load.sh")
+//        if err != nil {
+//               glog.Error(out)
+//        }
+//
+//        return err
+//}
 
-        // install kernel module
-        out, err := ExecCommand("./load.sh")
+// dial establishes the gRPC communication with the registered device plugin.
+func dial(unixSocketPath string, timeout time.Duration) (*grpc.ClientConn, error) {
+        c, err := grpc.Dial(unixSocketPath, grpc.WithInsecure(), grpc.WithBlock(),
+                grpc.WithTimeout(timeout),
+                grpc.WithDialer(func(addr string, timeout time.Duration) (net.Conn, error) {
+                        return net.DialTimeout("unix", addr, timeout)
+                }),
+        )
+
         if err != nil {
-               glog.Error(out)
+                return nil, err
         }
 
-        return err
+        return c, nil
 }
 
+
+// Start starts the gRPC server of the device plugin
+func (cam *camCardManager) Start() error {
+	err := cam.cleanup()
+	if err != nil {
+		return err
+	}
+
+	sock, err := net.Listen("unix", cam.socket)
+	if err != nil {
+		return err
+	}
+
+	cam.server = grpc.NewServer([]grpc.ServerOption{}...)
+	pluginapi.RegisterDevicePluginServer(cam.server, cam)
+
+	go cam.server.Serve(sock)
+
+	// Wait for server to start by launching a blocking connexion
+	conn, err := dial(cam.socket, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	conn.Close()
+
+	go cam.healthcheck()
+
+	return nil
+}
+
+func (cam *camCardManager) healthcheck(){
+
+}
+
+func (cam *camCardManager) cleanup() error {
+	socketPath := path.Join(pluginapi.DevicePluginPath, tempPath)
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	return nil
+}
+
+func (cam *camCardManager) Stop() error {
+
+	if cam.server == nil {
+		return nil
+	}
+
+	cam.server.Stop()
+	cam.server = nil
+	return cam.cleanup()
+}
+
+// Register registers the device plugin for the given resourceName with Kubelet.
+func (cam *camCardManager) Register(kubeletEndpoint, resourceName string) error {
+	conn, err := dial(kubeletEndpoint, 5*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	client := pluginapi.NewRegistrationClient(conn)
+	reqt := &pluginapi.RegisterRequest{
+		Version:      pluginapi.Version,
+		Endpoint:     path.Base(cam.socket),
+		ResourceName: resourceName,
+	}
+
+	_, err = client.Register(context.Background(), reqt)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// Serve starts the gRPC server and register the device plugin to Kubelet
+func (cam *camCardManager) Serve() error {
+	err := cam.Start()
+	if err != nil {
+		fmt.Printf("Could not start device plugin: %s", err)
+		return err
+	}
+	fmt.Println("Starting to serve on", cam.socket)
+
+	err = cam.Register(pluginapi.KubeletSocket, resourceName)
+	if err != nil {
+		fmt.Printf("Could not register device plugin: %s", err)
+		cam.Stop()
+		return err
+	}
+	fmt.Println("Registered device plugin with Kubelet")
+
+	return nil
+}
 
 func main() {
 	flag.Parse()
@@ -230,6 +350,7 @@ func main() {
 	}
 
 	pluginEndpoint := fmt.Sprintf("%s-%d.sock", socketName, time.Now().Unix())
+	tempPath = pluginEndpoint
 
 	var wg sync.WaitGroup
 	wg.Add(1)
