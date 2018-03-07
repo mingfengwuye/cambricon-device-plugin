@@ -24,7 +24,7 @@ import (
 //const (
 var socketName string   = "camCard"
 var resourceName string = "cambricon/card"
-
+var volumePath string   = "/home/a/fyk/container-volume"
 //)
 // camCardManager manages Cambricon Card devices
 type camCardManager struct {
@@ -174,6 +174,7 @@ func (cam *camCardManager) ListAndWatch(emtpy *pluginapi.Empty, stream pluginapi
 func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	glog.Info("Allocate")
 	resp := new(pluginapi.AllocateResponse)
+	// mount devices to container
 	for _, id := range rqt.DevicesIDs {
 		if _, ok := cam.devices[id]; ok {
 			if d, ok :=cam.deviceFiles[id]; ok{
@@ -185,6 +186,11 @@ func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.Allocate
 			}
 		}
 	}
+	// mount volume to container
+	resp.Mounts = append(resp.Mounts, &pluginapi.Mount{
+		HostPath: volumePath,
+		ContainerPath: volumePath,
+	})
 	return resp, nil
 }
 
