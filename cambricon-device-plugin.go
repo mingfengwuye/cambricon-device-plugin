@@ -2,20 +2,18 @@ package main
 
 import (
 	"os"
-	//"strconv"
 	"bytes"
 	"os/exec"
-	//"syscall"
 	"flag"
 	"fmt"
 	"github.com/golang/glog"
 	"io/ioutil"
 	"net"
 	"path"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"github.com/satori/go.uuid"
 
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -24,13 +22,8 @@ import (
 )
 
 //const (
-var onloadver string    = "201606-u1.3"
-var onloadsrc string    = "http://www.openonload.org/download/openonload-" + onloadver + ".tgz"
-var regExpCAM string    = "(?m)[\r\n]+^.*Synopsys.*$"
 var socketName string   = "camCard"
 var resourceName string = "cambricon/card"
-var k8sAPI string       = "https://localhost:6443"
-var nodeLabelVersion string = "device.sfc.onload-version"
 
 //)
 // camCardManager manages Cambricon Card devices
@@ -61,22 +54,43 @@ func ExecCommand(cmdName string, arg ...string) (bytes.Buffer, error) {
 	return out, err
 }
 
+func ListDir(dirPth string, suffix string) (files []string, err error) {
+	files = make([]string, 0, 10)
+	dir, err := ioutil.ReadDir(dirPth)
+	if err != nil {
+		return nil, err
+	}
+	PthSep := string(os.PathSeparator)
+	for _, fi := range dir {
+		if fi.IsDir() { // ignore dirs
+			continue
+		}
+		if strings.Contains(fi.Name(), suffix) { //match files
+			files = append(files, dirPth+PthSep+fi.Name())
+		}
+	}
+
+	return files, nil
+}
+
 func (cam *camCardManager) discoverCambriconResources() bool {
 	found := false
 	cam.devices = make(map[string]*pluginapi.Device)
-	glog.Info("discoverCambriconResources")
-	out, err := ExecCommand("lshw", "-short", "-class", "generic")
+	glog.Info("discover Cambricon Card Resources")
+
+	camCards, err := ListDir("/dev", "cambricon")
+
 	if err != nil {
 		glog.Errorf("Error while discovering: %v", err)
 		return found
 	}
-	re := regexp.MustCompile(regExpCAM)
-	camCards := re.FindAllString(out.String(), -1)
-	for _, nic := range camCards {
-		//nameIf := strings.Fields(nic)[1]
-		fmt.Printf("logical name: %v \n", strings.Fields(nic)[2])
-		dev := pluginapi.Device{ID: strings.Fields(nic)[2], Health: pluginapi.Healthy}
-		cam.devices[strings.Fields(nic)[2]] = &dev
+	for _, card := range camCards {
+		u1 := uuid.Must(uuid.NewV4())
+		fmt.Printf("Creating UUID for device UUIDv4: %s\n", u1)
+		out := fmt.Sprint(u1)
+		dev := pluginapi.Device{ID: out, Health: pluginapi.Healthy}
+		cam.devices[out] = &dev
+		strings.Join(cam.deviceFiles, card)
 		found = true
 	}
 	fmt.Printf("Devices: %v \n", cam.devices)
@@ -84,44 +98,13 @@ func (cam *camCardManager) discoverCambriconResources() bool {
 	return found
 }
 
-func (cam *camCardManager) isOnloadInstallHealthy() bool {
+func (cam *camCardManager) isHealthy() bool {
 	healthy := false
-	//cmdName := "onload"
-	//cmdName := "ssh"
-	//out, _ := ExecCommand(cmdName, "--version")
-	//out, _ := ExecCommand(cmdName, "-o", "StrictHostKeyChecking=no", "127.0.0.1", "onload --version")
 
-	//if strings.Contains(out.String(), "Cambricon Communications") && strings.Contains(out.String(), onloadver) {
-		//cmdName = "/sbin/ldconfig"
-	//	out, _ := ExecCommand(cmdName, "-o", "StrictHostKeyChecking=no", "127.0.0.1", "/sbin/ldconfig -N -v")
+	healthy = true
 
-	//	if strings.Contains(out.String(), "libonload") {
-	//		if AreAllOnloadDevicesAvailable() == true {
-	//			fmt.Println("All Onload devices Verified\n")
-				healthy = true
-	//		} else {
-	//			fmt.Errorf("Inconsistent Onload installation. All Onload devices are not available!!!")
-	//		}
-	//	} else {
-	//		fmt.Errorf("Inconsistent Onload installation. libonload not detected.")
-	//	}
-	//} else {
-	//	fmt.Errorf("Inconsistent Onload installation.")
-	//}
 	return healthy
 }
-
-//func (cam *camCardManager) installOnload() error {
-//
-//
-//
-//}
-
-//func (cam *camCardManager) Init() error {
-//	glog.Info("Init\n")
-//	err := cam.installOnload()
-//	return err
-//}
 
 func Register(kubeletEndpoint string, pluginEndpoint, socketName string) error {
 	conn, err := grpc.Dial(kubeletEndpoint, grpc.WithInsecure(),
@@ -151,7 +134,7 @@ func (cam *camCardManager) ListAndWatch(emtpy *pluginapi.Empty, stream pluginapi
 	glog.Info("device-plugin: ListAndWatch start\n")
 	for {
 		cam.discoverCambriconResources()
-		if !cam.isOnloadInstallHealthy() {
+		if !cam.isHealthy() {
 			glog.Errorf("Error with onload installation. Marking devices unhealthy.")
 			for _, device := range cam.devices {
 				device.Health = pluginapi.Unhealthy
@@ -174,7 +157,6 @@ func (cam *camCardManager) ListAndWatch(emtpy *pluginapi.Empty, stream pluginapi
 func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	glog.Info("Allocate")
 	resp := new(pluginapi.AllocateResponse)
-	//	containerName := strings.Join([]string{"k8s", "POD", rqt.PodName, rqt.Namespace}, "_")
 	for _, id := range rqt.DevicesIDs {
 		if _, ok := cam.devices[id]; ok {
 			for _, d := range cam.deviceFiles {
@@ -185,92 +167,39 @@ func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.Allocate
 				})
 			}
 			glog.Info("Allocated interface ", id)
-			//glog.Info("Allocate interface ", id, " to ", containerName)
-			//go MoveInterface(id)
 		}
 	}
 	return resp, nil
 }
 
-func MoveInterface(interfaceName string) {
-	glog.Info("move interface after reading checkpoint file")
-	_, err := ExecCommand("/usr/bin/cont-cam-nic-move.sh", interfaceName, k8sAPI)
-	if err != nil {
-		glog.Error(err)
-	}
+func (cam *camCardManager) Init() error {
+        glog.Info("Init\n")
+        glog.Info("Install kernel module\n")
+
+        // install kernel module
+        out, err := ExecCommand("./load.sh")
+        if err != nil {
+               glog.Error(out)
+        }
+
+        return err
 }
 
-func AnnotateNodeWithOnloadVersion(version string) {
-	glog.Info("Annotating Node with onload version: ", version, " ", nodeLabelVersion)
-	//TODO: Read api url from config map
-	out, err := ExecCommand("/usr/bin/annotate_node.sh", k8sAPI, nodeLabelVersion, version)
-	if err != nil {
-		glog.Error(err)
-	}
-	glog.Info(out.String())
-}
-
-func AreAllOnloadDevicesAvailable() bool {
-	glog.Info("AreAllOnloadDevicesAvailable\n")
-
-	found := 0
-
-	// read the whole file at once
-	b, err := ioutil.ReadFile("/gopath/proc/devices")
-	if err != nil {
-		panic(err)
-	}
-	s := string(b)
-
-	if strings.Index(s, "onload_epoll") > 0 {
-		found++
-	}
-
-	if strings.Index(s, "onload_cplane") > 0 {
-		found++
-	}
-
-	// '\n' is added to avoid a match with onload_cplane and onload_epoll
-	if strings.Index(s, "onload\n") > 0 {
-		found++
-	}
-
-	if found == 3 {
-		return true
-	} else {
-		return false
-	}
-}
-
-func (cam *camCardManager) UnInit() {
-	var out bytes.Buffer
-	var stderr bytes.Buffer
-
-	//fmt.Println("CMD--" + cmdName + ": " + out.String())
-	cmdName := "onload_uninstall"
-	cmd := exec.Command(cmdName)
-	cmd.Stdout = &out
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		fmt.Println("CMD--" + cmdName + ": " + fmt.Sprint(err) + ": " + stderr.String())
-	}
-	//fmt.Println("CMD--" + cmdName + ": " + out.String())
-
-	return
-}
+//func (cam *camCardManager) UnInit() {
+//
+//	// uninstall kernel module
+//        out, err := ExecCommand("./unload.sh")
+//        if err != nil {
+//               glog.Error(err)
+//        }
+//
+//        return err
+//}
 
 func main() {
 	flag.Parse()
-	fmt.Printf("Starting main \n")
+	fmt.Printf("Starting Cambricon device plugin main \n")
 
-	//onloadver = os.Args[1] //"201606-u1.3"
-	//onloadsrc = os.Args[2]    //"http://www.openonload.org/download/openonload-" + onloadver + ".tgz"
-	//regExpCAM = os.Args[2]    //"(?m)[\r\n]+^.*CAM[6-9].*$"
-	//socketName = os.Args[3]   //"camCard"
-	//resourceName = os.Args[4] //"pod.alpha.kubernetes.io/opaque-int-resource-camCard"
-	//k8sAPI = os.Args[5]
-	//nodeLabelVersion = os.Args[6]
 	flag.Lookup("logtostderr").Value.Set("true")
 
 	cam, err := NewCAMCardManager()
@@ -279,27 +208,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	//err = cam.UnInit()
+
+	err = cam.Init()
+	if err != nil{
+		glog.Errorf("Error with install kernel module")
+		//os.Exit(1)
+	}
 	found := cam.discoverCambriconResources()
 	if !found {
-		// clean up any exisiting device plugin software
-		//cam.UnInit()
 		glog.Errorf("No Cambricon Cards are present\n")
 		os.Exit(1)
 	}
-	if !cam.isOnloadInstallHealthy() {
-		//err = cam.Init()
-		//if err != nil {
+	if !cam.isHealthy() {
 		glog.Errorf("Error with onload installation")
-		//		for _, device := range cam.devices {
-		//			device.Health = pluginapi.Unhealthy
-		//		}
-		//	}
-		//AnnotateNodeWithOnloadVersion("")
 	}
-	//AnnotateNodeWithOnloadVersion(onloadver)
 
 	pluginEndpoint := fmt.Sprintf("%s-%d.sock", socketName, time.Now().Unix())
-	//serverStarted := make(chan bool)
+
 	var wg sync.WaitGroup
 	wg.Add(1)
 	// Starts device plugin service.
