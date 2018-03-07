@@ -97,14 +97,14 @@ func (cam *camCardManager) discoverCambriconResources() bool {
 	}
 	for _, card := range camCards {
 		if !cam.doesExist(card){
-				fmt.Printf("devicefiles %s", cam.deviceFiles)
-				u1 := uuid.Must(uuid.NewV4())
-				fmt.Printf("Creating UUID for device UUIDv4: %s\n", u1)
-				out := fmt.Sprint(u1)
-				dev := pluginapi.Device{ID: out, Health: pluginapi.Healthy}
-				cam.devices[out] = &dev
-				cam.deviceFiles[out] = card
-				fmt.Printf("after devicefiles %s", cam.deviceFiles)
+			fmt.Printf("devicefiles %s", cam.deviceFiles)
+			u1 := uuid.Must(uuid.NewV4())
+			fmt.Printf("Creating UUID for device UUIDv4: %s\n", u1)
+			out := fmt.Sprint(u1)
+			dev := pluginapi.Device{ID: out, Health: pluginapi.Healthy}
+			cam.devices[out] = &dev
+			cam.deviceFiles[out] = card
+			fmt.Printf("after devicefiles %s", cam.deviceFiles)
 		}
 	}
 	fmt.Printf("Devices: %v \n", cam.devices)
