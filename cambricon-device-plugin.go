@@ -29,13 +29,13 @@ var resourceName string = "cambricon/card"
 // camCardManager manages Cambricon Card devices
 type camCardManager struct {
 	devices     map[string]*pluginapi.Device
-	deviceFiles []string
+	deviceFiles map[string]string
 }
 
 func NewCAMCardManager() (*camCardManager, error) {
 	return &camCardManager{
 		devices:     make(map[string]*pluginapi.Device),
-		deviceFiles: []string{"/dev/cambricon_dmDev0"},
+		deviceFiles: make(map[string]string),
 	}, nil
 }
 
@@ -73,9 +73,20 @@ func ListDir(dirPth string, suffix string) (files []string, err error) {
 	return files, nil
 }
 
+func (cam *camCardManager) doesExist(devpath string) bool {
+
+	for _, v := range cam.deviceFiles{
+		if strings.ContainsAny(v, devpath){
+			return  true
+		}
+	}
+
+	return  false
+}
+
 func (cam *camCardManager) discoverCambriconResources() bool {
 	found := false
-	cam.devices = make(map[string]*pluginapi.Device)
+	//cam.devices = make(map[string]*pluginapi.Device)
 	glog.Info("discover Cambricon Card Resources")
 
 	camCards, err := ListDir("/dev", "cambricon")
@@ -85,15 +96,21 @@ func (cam *camCardManager) discoverCambriconResources() bool {
 		return found
 	}
 	for _, card := range camCards {
-		u1 := uuid.Must(uuid.NewV4())
-		fmt.Printf("Creating UUID for device UUIDv4: %s\n", u1)
-		out := fmt.Sprint(u1)
-		dev := pluginapi.Device{ID: out, Health: pluginapi.Healthy}
-		cam.devices[out] = &dev
-		strings.Join(cam.deviceFiles, card)
-		found = true
+		if !cam.doesExist(card){
+				fmt.Printf("devicefiles %s", cam.deviceFiles)
+				u1 := uuid.Must(uuid.NewV4())
+				fmt.Printf("Creating UUID for device UUIDv4: %s\n", u1)
+				out := fmt.Sprint(u1)
+				dev := pluginapi.Device{ID: out, Health: pluginapi.Healthy}
+				cam.devices[out] = &dev
+				cam.deviceFiles[out] = card
+				fmt.Printf("after devicefiles %s", cam.deviceFiles)
+		}
 	}
 	fmt.Printf("Devices: %v \n", cam.devices)
+	if len(cam.deviceFiles) > 0{
+		found = true
+	}
 
 	return found
 }
@@ -159,14 +176,13 @@ func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.Allocate
 	resp := new(pluginapi.AllocateResponse)
 	for _, id := range rqt.DevicesIDs {
 		if _, ok := cam.devices[id]; ok {
-			for _, d := range cam.deviceFiles {
+			if d, ok :=cam.deviceFiles[id]; ok{
 				resp.Devices = append(resp.Devices, &pluginapi.DeviceSpec{
 					HostPath:      d,
 					ContainerPath: d,
 					Permissions:   "mrw",
 				})
 			}
-			glog.Info("Allocated interface ", id)
 		}
 	}
 	return resp, nil
@@ -185,16 +201,6 @@ func (cam *camCardManager) Init() error {
         return err
 }
 
-//func (cam *camCardManager) UnInit() {
-//
-//	// uninstall kernel module
-//        out, err := ExecCommand("./unload.sh")
-//        if err != nil {
-//               glog.Error(err)
-//        }
-//
-//        return err
-//}
 
 func main() {
 	flag.Parse()
@@ -208,13 +214,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	//err = cam.UnInit()
-
-	err = cam.Init()
-	if err != nil{
-		glog.Errorf("Error with install kernel module")
-		//os.Exit(1)
-	}
 	found := cam.discoverCambriconResources()
 	if !found {
 		glog.Errorf("No Cambricon Cards are present\n")
