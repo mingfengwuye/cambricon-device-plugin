@@ -75,18 +75,21 @@ func ListDir(dirPth string, suffix string) (files []string, err error) {
 
 func (cam *camCardManager) doesExist(devpath string) bool {
 
+	result := false
 	for _, v := range cam.deviceFiles{
-		if strings.ContainsAny(v, devpath){
-			return  true
+		//fmt.Printf("exist card is : %s\n", v)
+		//fmt.Printf("check dev is : %s\n", devpath)
+		if 0 == strings.Compare(v, devpath){
+			result = true
+			break
 		}
 	}
 
-	return  false
+	return  result
 }
 
 func (cam *camCardManager) discoverCambriconResources() bool {
 	found := false
-	//cam.devices = make(map[string]*pluginapi.Device)
 	glog.Info("discover Cambricon Card Resources")
 
 	camCards, err := ListDir("/dev", "cambricon")
@@ -95,18 +98,22 @@ func (cam *camCardManager) discoverCambriconResources() bool {
 		glog.Errorf("Error while discovering: %v", err)
 		return found
 	}
+
 	for _, card := range camCards {
-		if !cam.doesExist(card){
-			fmt.Printf("devicefiles %s", cam.deviceFiles)
+		//fmt.Printf("detect card is: %s \n", card)
+		//fmt.Printf("check result is %s\n", cam.doesExist(card))
+		if cam.doesExist(card) == false {
+			//fmt.Printf("devicefiles %s", cam.deviceFiles)
 			u1 := uuid.Must(uuid.NewV4())
-			fmt.Printf("Creating UUID for device UUIDv4: %s\n", u1)
+			fmt.Printf("Creating UUID for %s : %s\n", card, u1)
 			out := fmt.Sprint(u1)
 			dev := pluginapi.Device{ID: out, Health: pluginapi.Healthy}
 			cam.devices[out] = &dev
 			cam.deviceFiles[out] = card
-			fmt.Printf("after devicefiles %s", cam.deviceFiles)
+			fmt.Printf("devicefiles %s\n", cam.deviceFiles)
 		}
 	}
+
 	fmt.Printf("Devices: %v \n", cam.devices)
 	if len(cam.deviceFiles) > 0{
 		found = true
