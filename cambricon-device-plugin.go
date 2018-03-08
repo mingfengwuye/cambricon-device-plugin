@@ -90,7 +90,7 @@ func ListDir(dirPth string, suffix string) (files []string, err error) {
 func (cam *camCardManager) doesExist(devpath string) bool {
 
 	for _, v := range cam.deviceFiles{
-		if strings.ContainsAny(v, devpath){
+		if v == devpath {
 			return  true
 		}
 	}
@@ -101,7 +101,7 @@ func (cam *camCardManager) doesExist(devpath string) bool {
 func (cam *camCardManager) discoverCambriconResources() bool {
 	found := false
 	//cam.devices = make(map[string]*pluginapi.Device)
-	glog.Info("discover Cambricon Card Resources")
+	glog.Info("Discovering Cambricon Card Resources")
 
 	camCards, err := ListDir("/dev", "cambricon")
 
@@ -111,16 +111,17 @@ func (cam *camCardManager) discoverCambriconResources() bool {
 	}
 	for _, card := range camCards {
 		if !cam.doesExist(card){
-			fmt.Printf("devicefiles %s", cam.deviceFiles)
+			fmt.Printf("Devicefiles %s\n", cam.deviceFiles)
 			u1 := uuid.Must(uuid.NewV4())
 			fmt.Printf("Creating UUID for device UUIDv4: %s\n", u1)
 			out := fmt.Sprint(u1)
 			dev := pluginapi.Device{ID: out, Health: pluginapi.Healthy}
 			cam.devices[out] = &dev
 			cam.deviceFiles[out] = card
-			fmt.Printf("after devicefiles %s", cam.deviceFiles)
+			//fmt.Printf("After devicefiles %s\n", cam.deviceFiles)
 		}
 	}
+
 	fmt.Printf("Devices: %v \n", cam.devices)
 	if len(cam.deviceFiles) > 0{
 		found = true
@@ -187,7 +188,7 @@ func (cam *camCardManager) ListAndWatch(emtpy *pluginapi.Empty, stream pluginapi
 				glog.Errorf("Failed to send response to kubelet: %v\n", err)
 			}
 			fmt.Printf("\n")
-			time.Sleep(10 * time.Second)
+			time.Sleep(3 * time.Second)
 		}
 	}
 	//return nil
@@ -196,6 +197,7 @@ func (cam *camCardManager) ListAndWatch(emtpy *pluginapi.Empty, stream pluginapi
 func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	glog.Info("Allocate")
 	resp := new(pluginapi.AllocateResponse)
+
 	// mount devices to container
 	for _, id := range rqt.DevicesIDs {
 		if _, ok := cam.devices[id]; ok {
@@ -208,6 +210,7 @@ func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.Allocate
 			}
 		}
 	}
+
 	// mount volume to container
 	resp.Mounts = append(resp.Mounts, &pluginapi.Mount{
 		HostPath: volumePath,
@@ -394,8 +397,6 @@ Loop:
 			//devicePlugin = NewNvidiaDevicePlugin()
 			if err := cam.Serve(); err != nil {
 				fmt.Println("Could not contact Kubelet, retrying. Did you enable the device plugin feature gate?")
-				fmt.Printf("You can check the prerequisites at: https://github.com/NVIDIA/k8s-device-plugin#prerequisites")
-				fmt.Printf("You can learn how to set the runtime at: https://github.com/NVIDIA/k8s-device-plugin#quick-start")
 			} else {
 				restart = false
 			}
@@ -404,12 +405,12 @@ Loop:
 		select {
 		case event := <-watcher.Events:
 			if event.Name == pluginapi.KubeletSocket && event.Op&fsnotify.Create == fsnotify.Create {
-				fmt.Printf("inotify: %s created, restarting.\n", pluginapi.KubeletSocket)
+				fmt.Printf("Inotify: %s created, restarting.\n", pluginapi.KubeletSocket)
 				restart = true
 			}
 
 		case err := <-watcher.Errors:
-			fmt.Printf("inotify: %s", err)
+			fmt.Printf("Inotify: %s", err)
 
 		case s := <-sigs:
 			switch s {
