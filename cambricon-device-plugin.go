@@ -4,6 +4,7 @@ import (
 	"os"
 	"bytes"
 	"os/exec"
+	"syscall"
 	"flag"
 	"fmt"
 	"github.com/golang/glog"
@@ -11,10 +12,10 @@ import (
 	"net"
 	"path"
 	"strings"
-	"sync"
+//	"sync"
 	"time"
 	"github.com/satori/go.uuid"
-
+	"github.com/fsnotify/fsnotify"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
@@ -35,6 +36,8 @@ type camCardManager struct {
 	devices     map[string]*pluginapi.Device
 	deviceFiles map[string]string
 
+	stopSignal   chan interface{}
+
 	socket string
 	server *grpc.Server
 }
@@ -43,6 +46,8 @@ func NewCAMCardManager() (*camCardManager, error) {
 	return &camCardManager{
 		devices:     make(map[string]*pluginapi.Device),
 		deviceFiles: make(map[string]string),
+
+		//stopSignal:   make(chan interface{}),
 
 		socket: serverSock,
 	}, nil
@@ -132,52 +137,60 @@ func (cam *camCardManager) isHealthy() bool {
 	return healthy
 }
 
-func Register(kubeletEndpoint string, pluginEndpoint, socketName string) error {
-	conn, err := grpc.Dial(kubeletEndpoint, grpc.WithInsecure(),
-		grpc.WithDialer(func(addr string, timeout time.Duration) (net.Conn, error) {
-			return net.DialTimeout("unix", addr, timeout)
-		}))
-	defer conn.Close()
-	if err != nil {
-		return fmt.Errorf("device-plugin: cannot connect to kubelet service: %v", err)
-	}
-	client := pluginapi.NewRegistrationClient(conn)
-	reqt := &pluginapi.RegisterRequest{
-		Version:      pluginapi.Version,
-		Endpoint:     pluginEndpoint,
-		ResourceName: resourceName,
-	}
-
-	_, err = client.Register(context.Background(), reqt)
-	if err != nil {
-		return fmt.Errorf("device-plugin: cannot register to kubelet service: %v", err)
-	}
-	return nil
-}
+//func Register(kubeletEndpoint string, pluginEndpoint, socketName string) error {
+//	conn, err := grpc.Dial(kubeletEndpoint, grpc.WithInsecure(),
+//		grpc.WithDialer(func(addr string, timeout time.Duration) (net.Conn, error) {
+//			return net.DialTimeout("unix", addr, timeout)
+//		}))
+//	defer conn.Close()
+//	if err != nil {
+//		return fmt.Errorf("device-plugin: cannot connect to kubelet service: %v", err)
+//	}
+//	client := pluginapi.NewRegistrationClient(conn)
+//	reqt := &pluginapi.RegisterRequest{
+//		Version:      pluginapi.Version,
+//		Endpoint:     pluginEndpoint,
+//		ResourceName: resourceName,
+//	}
+//
+//	_, err = client.Register(context.Background(), reqt)
+//	if err != nil {
+//		return fmt.Errorf("device-plugin: cannot register to kubelet service: %v", err)
+//	}
+//	return nil
+//}
 
 // Implements DevicePlugin service functions
 func (cam *camCardManager) ListAndWatch(emtpy *pluginapi.Empty, stream pluginapi.DevicePlugin_ListAndWatchServer) error {
 	glog.Info("device-plugin: ListAndWatch start\n")
 	for {
-		cam.discoverCambriconResources()
-		if !cam.isHealthy() {
-			glog.Errorf("Error with onload installation. Marking devices unhealthy.")
-			for _, device := range cam.devices {
-				device.Health = pluginapi.Unhealthy
+
+		select {
+		case <-cam.stopSignal:
+			fmt.Printf("Stop ListAndWatch ....\n")
+			return nil
+		default:
+			cam.discoverCambriconResources()
+			if !cam.isHealthy() {
+				glog.Errorf("Error with onload installation. Marking devices unhealthy.")
+				for _, device := range cam.devices {
+					device.Health = pluginapi.Unhealthy
+				}
 			}
+			resp := new(pluginapi.ListAndWatchResponse)
+			for _, dev := range cam.devices {
+				glog.Info("dev ", dev)
+				resp.Devices = append(resp.Devices, dev)
+			}
+			glog.Info("resp.Devices ", resp.Devices)
+			if err := stream.Send(resp); err != nil {
+				glog.Errorf("Failed to send response to kubelet: %v\n", err)
+			}
+			fmt.Printf("\n")
+			time.Sleep(10 * time.Second)
 		}
-		resp := new(pluginapi.ListAndWatchResponse)
-		for _, dev := range cam.devices {
-			glog.Info("dev ", dev)
-			resp.Devices = append(resp.Devices, dev)
-		}
-		glog.Info("resp.Devices ", resp.Devices)
-		if err := stream.Send(resp); err != nil {
-			glog.Errorf("Failed to send response to kubelet: %v\n", err)
-		}
-		time.Sleep(5 * time.Second)
 	}
-	return nil
+	//return nil
 }
 
 func (cam *camCardManager) Allocate(ctx context.Context, rqt *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
@@ -235,10 +248,12 @@ func dial(unixSocketPath string, timeout time.Duration) (*grpc.ClientConn, error
 
 // Start starts the gRPC server of the device plugin
 func (cam *camCardManager) Start() error {
-	err := cam.cleanup()
-	if err != nil {
-		return err
-	}
+	//err := cam.cleanup()
+	//if err != nil {
+	//	return err
+	//}
+
+	//cam.stopSignal = make(chan interface{})
 
 	sock, err := net.Listen("unix", cam.socket)
 	if err != nil {
@@ -250,6 +265,7 @@ func (cam *camCardManager) Start() error {
 
 	go cam.server.Serve(sock)
 
+	cam.stopSignal = make(chan interface{})
 	// Wait for server to start by launching a blocking connexion
 	conn, err := dial(cam.socket, 5*time.Second)
 	if err != nil {
@@ -257,14 +273,14 @@ func (cam *camCardManager) Start() error {
 	}
 	conn.Close()
 
-	go cam.healthcheck()
+	//go cam.healthcheck()
 
 	return nil
 }
 
-func (cam *camCardManager) healthcheck(){
-
-}
+//func (cam *camCardManager) healthcheck(){
+//
+//}
 
 func (cam *camCardManager) cleanup() error {
 	socketPath := path.Join(pluginapi.DevicePluginPath, tempPath)
@@ -283,6 +299,9 @@ func (cam *camCardManager) Stop() error {
 
 	cam.server.Stop()
 	cam.server = nil
+
+	close(cam.stopSignal)
+
 	return cam.cleanup()
 }
 
@@ -352,30 +371,83 @@ func main() {
 	pluginEndpoint := fmt.Sprintf("%s-%d.sock", socketName, time.Now().Unix())
 	tempPath = pluginEndpoint
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	// Starts device plugin service.
-	go func() {
-		defer wg.Done()
-		fmt.Printf("DveicePluginPath %s, pluginEndpoint %s\n", pluginapi.DevicePluginPath, pluginEndpoint)
-		fmt.Printf("device-plugin start server at: %s\n", path.Join(pluginapi.DevicePluginPath, pluginEndpoint))
-		lis, err := net.Listen("unix", path.Join(pluginapi.DevicePluginPath, pluginEndpoint))
-		if err != nil {
-			glog.Fatal(err)
-			return
-		}
-		grpcServer := grpc.NewServer()
-		pluginapi.RegisterDevicePluginServer(grpcServer, cam)
-		grpcServer.Serve(lis)
-	}()
-
-	// TODO: fix this
-	time.Sleep(5 * time.Second)
-	// Registers with Kubelet.
-	err = Register(pluginapi.KubeletSocket, pluginEndpoint, resourceName)
+	fmt.Println("Starting FS watcher.")
+	watcher, err := newFSWatcher(pluginapi.DevicePluginPath)
 	if err != nil {
-		glog.Fatal(err)
+		fmt.Println("Failed to created FS watcher.")
+		os.Exit(1)
 	}
-	fmt.Printf("device-plugin registered\n")
-	wg.Wait()
+	defer watcher.Close()
+
+	fmt.Println("Starting OS watcher.")
+	sigs := newOSWatcher(syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+
+	restart := true
+
+Loop:
+	for {
+		if restart {
+			if cam != nil {
+				cam.Stop()
+			}
+
+			//devicePlugin = NewNvidiaDevicePlugin()
+			if err := cam.Serve(); err != nil {
+				fmt.Println("Could not contact Kubelet, retrying. Did you enable the device plugin feature gate?")
+				fmt.Printf("You can check the prerequisites at: https://github.com/NVIDIA/k8s-device-plugin#prerequisites")
+				fmt.Printf("You can learn how to set the runtime at: https://github.com/NVIDIA/k8s-device-plugin#quick-start")
+			} else {
+				restart = false
+			}
+		}
+
+		select {
+		case event := <-watcher.Events:
+			if event.Name == pluginapi.KubeletSocket && event.Op&fsnotify.Create == fsnotify.Create {
+				fmt.Printf("inotify: %s created, restarting.\n", pluginapi.KubeletSocket)
+				restart = true
+			}
+
+		case err := <-watcher.Errors:
+			fmt.Printf("inotify: %s", err)
+
+		case s := <-sigs:
+			switch s {
+			case syscall.SIGHUP:
+				fmt.Println("Received SIGHUP, restarting.")
+				restart = true
+			default:
+				fmt.Printf("Received signal \"%v\", shutting down.", s)
+				cam.Stop()
+				break Loop
+			}
+		}
+	}
+
+//	var wg sync.WaitGroup
+//	wg.Add(1)
+//	// Starts device plugin service.
+//	go func() {
+//		defer wg.Done()
+//		fmt.Printf("DveicePluginPath %s, pluginEndpoint %s\n", pluginapi.DevicePluginPath, pluginEndpoint)
+//		fmt.Printf("device-plugin start server at: %s\n", path.Join(pluginapi.DevicePluginPath, pluginEndpoint))
+//		lis, err := net.Listen("unix", path.Join(pluginapi.DevicePluginPath, pluginEndpoint))
+//		if err != nil {
+//			glog.Fatal(err)
+//			return
+//		}
+//		grpcServer := grpc.NewServer()
+//		pluginapi.RegisterDevicePluginServer(grpcServer, cam)
+//		grpcServer.Serve(lis)
+//	}()
+//
+//	// TODO: fix this
+//	time.Sleep(5 * time.Second)
+//	// Registers with Kubelet.
+//	err = Register(pluginapi.KubeletSocket, pluginEndpoint, resourceName)
+//	if err != nil {
+//		glog.Fatal(err)
+//	}
+//	fmt.Printf("device-plugin registered\n")
+//	wg.Wait()
 }
